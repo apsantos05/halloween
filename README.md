@@ -1,21 +1,49 @@
-# Halloween Party 1.0
-Landing page e checkout próprio com PIX Copia e Cola. BravoPay processa pagamentos via API. Confirmação consultada no servidor pelo botão Verificar pagamento.
+# Halloween Party 1.0 — checkout PIX, confirmação e entrega manual
 
-## Visualização e hospedagem
-Abra iniciar.bat para a landing page. checkout.html pode ser visualizado sem API, com vendas bloqueadas. A API requer Node/Vercel; servidor Python é apenas prévia visual.
-Vercel: build npm run build; saída dist; funções em api/. Apenas arquivos públicos são copiados para dist.
+Esta versão é baseada no último pacote `halloween_party_pix_escala_auditado_vercel.zip`, com verificação adicional da recuperação visual da compra no mesmo navegador. Preserva o visual, as atrações **sem imagem**, o open bar **sem imagem**, o local não revelado, os CTAs próximos à compra, os valores e o WhatsApp para receber manualmente os ingressos.
 
-## Configuração pendente no servidor
-BRAVOPAY_API_KEY: chave da conta recebedora. Nunca colocar no HTML ou enviar pelo chat.
-CHECKOUT_SECRET: segredo aleatório com pelo menos 32 caracteres.
-TICKET_PRICE_CENTS: valor em centavos, sem preço padrão.
-BRAVOPAY_PRODUCT_ID: opcional.
-SALES_OPEN: manter false até configurar e validar a integração real.
-Documentação: https://bravopay.club/docs
+## Variáveis no ambiente **Production** da Vercel
 
-## Validação e limites
-npm test utiliza respostas simuladas, sem cobranças. Chave e preço reais não fornecidos; integração real ainda não validada. Valor controlado no servidor, tentativas com idempotência e consulta autorizada por token assinado.
-Esta versão aceita PIX. Cartão na API documentada requer redirecionamento externo.
-Não inclui emissão de ingresso digital, controle de lotação, e-mail automático ou check-in. Definir entrega e operação de entrada antes de abrir vendas. A referência permite localizar a compra no painel BravoPay.
-Configurar proteção contra abuso na hospedagem antes de liberar tráfego público. Não há consulta automática contínua.
-Os dados não são persistidos no navegador. Recarregar perde o formulário e a referência na tela; transações já criadas continuam na BravoPay. Não repetir pagamento de uma compra já paga.
+| Variável | Necessidade |
+|---|---|
+| `BRAVOPAY_API_KEY` | Obrigatória. Chave NOVA; a anterior foi exposta no chat. |
+| `ORDER_SIGNING_SECRET` | Obrigatória, aleatória com 32+ caracteres; manter estável entre deploys. |
+| `BRAVOPAY_WEBHOOK_SECRET` | Necessária para autenticar webhooks. Cadastrar `https://SEU-DOMINIO/api/bravopay-webhook`. |
+| `UPSTASH_REDIS_REST_URL` | **Fortemente recomendada para centenas de visitantes / processamento eficiente em escala**. |
+| `UPSTASH_REDIS_REST_TOKEN` | O par da URL acima. Sem ambos, não há limite global nem cache compartilhado. |
+| `BRAVOPAY_PRODUCT_ID_MULHER`, `BRAVOPAY_PRODUCT_ID_HOMEM` | Opcionais para cobrança; configurar IDs reais se usar UTMify e filtros por produto. |
+
+Segredos apenas na Vercel. Após configurar, faça **novo deploy**. Este ZIP não contém credenciais reais. A instalação via Vercel executa `npm install` para a dependência `qrcode`.
+
+## Resumo das correções
+
+- `create-pix`: cálculo inteiro em centavos, validação de dados, referência/idempotência determinística baseada em UUID da tentativa e conteúdo do pedido. Se a resposta se perder, repetir o mesmo envio reutiliza `Idempotency-Key` durante a janela de idempotência do provedor (documentada como 24h). Não garante reconciliação após o vencimento dessa janela, nem entre sessões/dispositivos.
+- `pix-status`: token assinado obrigatório; correspondência de id, referência, valor, método, BRL e metadados antes de liberar compra. O cache do Redis guarda **somente dados de conciliação**, não CPF/e-mail/telefone. Com Redis, status por webhook e consulta compartilhada; sem Redis, consulta menos frequente.
+- `bravopay-webhook`: só aceita evento HMAC válido usando bytes brutos; janela de 5 minutos; estados de pagamento/reembolso/chargeback gravados no Redis quando configurado. Se indisponível, responde 503 para o provedor tentar reenviar. Sem Redis, funciona como endpoint informativo, sem fornecer sinal compartilhado de aprovação.
+- Proteções de volume com Redis: limites por minuto de até 30 criações + 25 consultas ao provedor, deixando margem sobre a documentação da BravoPay (60 req/min por chave). São limites de **requisições**, não de 30/25 vendas aprovadas. Webhooks e cache evitam consultas diretas em massa. Atingir a cota apresenta mensagem de aguardar; **não há fila de vendas**.
+- Checkout: 30s + jitter entre consultas *ao backend* quando há Redis, 180s sem Redis; pausa com aba oculta/offline; respeita resposta 429/Retry-After; consulta manual com intervalo mínimo; reuso da tentativa após timeout. Não gera PIX silenciosamente ao voltar.
+- Obrigado: valida PAID no servidor, tenta novamente quando a consulta falha, e só libera botão do WhatsApp comercial `5512988859882` com mensagem pronta depois de PAID. Entrega de ingresso é manual.
+
+## Limitações, sem promessas de homologação
+
+1. **Não houve PIX real pago neste ambiente.** Publicar, criar cobrança autorizada, pagar, verificar `PAID`, tela de obrigado e WhatsApp. Testar também webhook real no painel do provedor e comportamento de retries.
+2. Sem Redis, não anunciar o site como homologado para centenas de compradores simultâneos: não há limite compartilhado entre funções serverless nem status compartilhado por webhook; o checkout consulta a BravoPay com maior intervalo.
+3. Mesmo com Redis, limite oficial do provedor é 60 requisições/min por chave, possivelmente compartilhado com outros aplicativos que usam a mesma chave. Uma campanha com mais de 30 novas criações por minuto pode receber mensagens de espera; solicitar aumento de limite ao provedor ou planejar a campanha.
+4. Webhook precisa ser testado na **Vercel real**, inclusive acesso ao corpo bruto da requisição, assinaturas e sincronização do horário.
+5. A compra pode não ser recuperada em outro dispositivo/aba sem um banco de pedidos. A organização pode localizar a referência no painel da BravoPay e atender manualmente.
+6. Teste visual automatizado no Chromium local não concluiu neste ambiente; validar Safari/Chrome reais em 320–430px, QR, teclado virtual e botão WhatsApp.
+
+## Teste local
+
+`npm install && npm test`
+
+Os testes usam *mocks* de pagamento e Redis — não movimentam dinheiro.
+
+## Documentação técnica consultada
+
+- BravoPay: https://www.bravopay.club/docs
+- Vercel Node.js Functions: https://vercel.com/docs/functions/runtimes/node-js
+
+## Ajuste de continuidade do checkout
+
+Ao atualizar a página durante um PIX pendente, o checkout agora restaura visualmente o tipo e a quantidade de ingressos da mesma cobrança (no mesmo navegador), sem criar novo PIX. A validação e a confirmação continuam exclusivamente no servidor.

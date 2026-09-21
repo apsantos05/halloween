@@ -24,3 +24,7 @@ Rodar `npm test`. Inclui cálculo, retry/idempotência, token adulterado, CPF in
 ## Refinamento desta entrega
 - Corrigido resumo e seleção de ingresso ao reabrir o checkout durante PIX pendente; nenhum dado local aprova pagamento.
 - ZIP completo contém frontend, API serverless, webhook, Redis REST, testes, README e .env.example sem credenciais reais.
+
+## Ajuste de exibição PIX
+
+Testes novos: criação com campos opcionais ausentes; valor ausente com consulta de conferência; valor divergente recusado; PIX sem código recusado. Resultado dos testes registrado durante geração do pacote. **Testes locais simulados não comprovam recebimento de PIX real.**

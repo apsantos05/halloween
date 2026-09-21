@@ -47,3 +47,12 @@ Os testes usam *mocks* de pagamento e Redis — não movimentam dinheiro.
 ## Ajuste de continuidade do checkout
 
 Ao atualizar a página durante um PIX pendente, o checkout agora restaura visualmente o tipo e a quantidade de ingressos da mesma cobrança (no mesmo navegador), sem criar novo PIX. A validação e a confirmação continuam exclusivamente no servidor.
+
+## Correção de exibição PIX (21/09/2026)
+
+- Corrigida a rejeição de cobranças válidas quando a resposta de **criação** omite campos acessórios (`method`, `currency` e `external_reference`). Se algum desses campos vier preenchido de forma incompatível, a resposta ainda é rejeitada.
+- `amount_cents` divergente **sempre bloqueia**. Se estiver ausente, a API consulta a transação por referência e confere ID, valor, método e moeda no servidor **antes** de entregar PIX ao comprador.
+- Código `pix.copy_paste` e identificador da transação continuam obrigatórios; QR Code é gerado localmente a partir do copia-e-cola.
+- Erros técnicos mostram apenas um código de motivo nos logs de `/api/create-pix`, sem chave, nome, CPF, código PIX ou outros dados privados.
+- O webhook, o status `PAID` e a tela de obrigado permanecem separados da simples criação da cobrança.
+- **Ainda é necessário teste real após deploy**: PIX gerado e visível, pagamento de teste, confirmação `PAID`, obrigado e WhatsApp.

@@ -19,6 +19,7 @@ const redisMap=new Map();
 const txMap=new Map();
 const counters=new Map();
 let providerCalls=0;
+let creationResponseOverride=null;
 const copyPaste='000201BR.GOV.BCB.PIX.TEST';
 const originalFetch=global.fetch;
 global.fetch=async(url,init={})=>{
@@ -38,7 +39,7 @@ global.fetch=async(url,init={})=>{
   providerCalls++;
   const payload=JSON.parse(init.body);let tx=txMap.get(payload.external_reference);
   if(!tx){tx={id:'tx_'+crypto.createHash('sha256').update(payload.external_reference).digest('hex').slice(0,12),status:'PENDING',amount_cents:payload.amount_cents,external_reference:payload.external_reference,method:'PIX',currency:'BRL',metadata:payload.metadata,pix:{copy_paste:copyPaste,expires_at:new Date(Date.now()+1800000).toISOString()}};txMap.set(payload.external_reference,tx);}
-  return {ok:true,status:200,json:async()=>tx};
+  return {ok:true,status:200,json:async()=>creationResponseOverride?creationResponseOverride(tx):tx};
  }
  if(u.startsWith('https://bravopay.club/api/v1/transactions?')){
   providerCalls++;
@@ -57,6 +58,36 @@ test('gera PIX uma vez e conserva referência/idempotência nos retries',async()
  const a=await call(create,data),b=await call(create,data);
  assert.equal(a.statusCode,200);assert.equal(b.statusCode,200);assert.equal(a.body.amount_cents,4449);assert.equal(a.body.service_fee_cents,449);assert.equal(a.body.copy_paste,copyPaste);assert.equal(verify(a.body.token).ref,verify(b.body.token).ref);created=a.body;
  assert.equal(txMap.size,1);
+});
+
+test('resposta de criacao sem campos opcionais exibe PIX e preserva valor',async()=>{
+ creationResponseOverride=tx=>({id:tx.id,amount_cents:tx.amount_cents,pix:tx.pix});
+ try{
+  const r=await call(create,{ticket:'mulher',quantity:1,customer,request_id:'a1234567-1234-4234-8234-123456789013'});
+  assert.equal(r.statusCode,200);assert.equal(r.body.copy_paste,copyPaste);assert.equal(r.body.amount_cents,4449);
+ }finally{creationResponseOverride=null;}
+});
+test('se resposta nao informar valor, consultar gateway antes de exibir PIX',async()=>{
+ creationResponseOverride=tx=>({id:tx.id,pix:tx.pix});
+ try{
+  const before=providerCalls;
+  const r=await call(create,{ticket:'homem',quantity:1,customer,request_id:'a1234567-1234-4234-8234-123456789014'});
+  assert.equal(r.statusCode,200);assert.equal(r.body.amount_cents,6449);assert.equal(providerCalls,before+2);
+ }finally{creationResponseOverride=null;}
+});
+test('valor incorreto informado pelo gateway bloqueia PIX',async()=>{
+ creationResponseOverride=tx=>({...tx,amount_cents:tx.amount_cents+1});
+ try{
+  const r=await call(create,{ticket:'mulher',quantity:1,customer,request_id:'a1234567-1234-4234-8234-123456789015'});
+  assert.equal(r.statusCode,502);assert.match(r.body.error,/Não efetue pagamento/);
+ }finally{creationResponseOverride=null;}
+});
+test('codigo PIX ausente bloqueia apresentacao',async()=>{
+ creationResponseOverride=tx=>({...tx,pix:{}});
+ try{
+  const r=await call(create,{ticket:'mulher',quantity:1,customer,request_id:'a1234567-1234-4234-8234-123456789016'});
+  assert.equal(r.statusCode,502);
+ }finally{creationResponseOverride=null;}
 });
 test('token adulterado, valor divergente e CPF inválido são rejeitados',async()=>{
  assert.equal(verify(created.token+'x'),null);

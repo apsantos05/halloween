@@ -29,9 +29,37 @@ module.exports=async function handler(req,res){
   const data=await upstream.json().catch(()=>({}));
   if(upstream.status===429){const retry=Math.min(180,Math.max(5,Number(upstream.headers.get('Retry-After'))||60));return send(res,429,{error:'Pagamento temporariamente ocupado. Aguarde e tente novamente.',retry_after:retry},{'Retry-After':String(retry)});}
   if(!upstream.ok)return send(res,502,{error:'Não foi possível criar o PIX. Se já tentou, aguarde e repita sem atualizar os dados.'});
-  const pix=data?.pix?.copy_paste;
-  if(!pix||!/^tx_[a-zA-Z0-9_-]+$/.test(String(data.id||''))||Number(data.amount_cents)!==expected||String(data.method||'').toUpperCase()!=='PIX'||(data.currency&&String(data.currency).toUpperCase()!=='BRL')||(data.external_reference&&data.external_reference!==ref))return send(res,502,{error:'Não foi possível validar a cobrança PIX. Não efetue pagamento.'});
-  const token=sign({v:1,id:data.id,ref,ticket,quantity,amount:expected,name,expires:Date.now()+7*86400000});
+  // A API pode omitir campos opcionais na resposta da CRIACAO. Nao rejeite
+  // um PIX valido por falta de method/currency/external_reference. Nunca
+  // aceite um valor informado que difere do total calculado no servidor.
+  const pix=typeof data?.pix?.copy_paste==='string'?data.pix.copy_paste.trim():'';
+  const txId=String(data?.id||'');
+  let rejectReason=null;
+  if(!/^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(txId))rejectReason='invalid_transaction_id';
+  else if(!pix||pix.length<16||pix.length>10000)rejectReason='missing_pix_code';
+  else if(data.amount_cents!=null&&(!Number.isInteger(Number(data.amount_cents))||Number(data.amount_cents)!==expected))rejectReason='amount_mismatch';
+  else if(data.method!=null&&String(data.method).toUpperCase()!=='PIX')rejectReason='wrong_method';
+  else if(data.currency!=null&&String(data.currency).toUpperCase()!=='BRL')rejectReason='wrong_currency';
+  else if(data.external_reference!=null&&data.external_reference!==ref)rejectReason='reference_mismatch';
+  // Se o valor nao vier na criacao, consulte a propria cobranca ANTES de
+  // exibir o PIX, e exija ID, referencia, valor, metodo e moeda corretos.
+  if(!rejectReason&&data.amount_cents==null){
+   try{
+    const url=new URL(BASE);url.searchParams.set('external_reference',ref);url.searchParams.set('limit','5');
+    const check=await fetch(url,{headers:{Authorization:`Bearer ${process.env.BRAVOPAY_API_KEY}`,Accept:'application/json'},signal:AbortSignal.timeout(12000)});
+    if(!check.ok)rejectReason='amount_lookup_unavailable';
+    else{
+     const body=await check.json();
+     const confirmed=Array.isArray(body?.data)&&body.data.some(tx=>tx?.id===txId&&tx.external_reference===ref&&Number(tx.amount_cents)===expected&&String(tx.method||'').toUpperCase()==='PIX'&&String(tx.currency||'').toUpperCase()==='BRL');
+     if(!confirmed)rejectReason='amount_not_confirmed';
+    }
+   }catch{rejectReason='amount_lookup_failed';}
+  }
+  if(rejectReason){
+   console.error('[create-pix] rejected provider response', {reason:rejectReason});
+   return send(res,502,{error:'Não foi possível validar a cobrança PIX. Não efetue pagamento.'});
+  }
+  const token=sign({v:1,id:txId,ref,ticket,quantity,amount:expected,name,expires:Date.now()+7*86400000});
   let qr=null;try{qr=await QRCode.toDataURL(pix,{width:440,margin:1,errorCorrectionLevel:'M'});}catch{/* O código copia e cola continua disponível. */}
   return send(res,200,{token,amount_cents:expected,subtotal_cents:TICKETS[ticket].cents*quantity,service_fee_cents:FEE*quantity,copy_paste:pix,expires_at:data.pix.expires_at||null,qr_data_url:qr});
  }catch{return send(res,502,{error:'Não foi possível conectar ao pagamento. Repita a tentativa sem alterar os dados.'});}
